@@ -9,6 +9,7 @@ function parseRowsToSeries(rows) {
   const areaData   = [];
 
   rows.forEach(row => {
+    if(files)
     const ts = Math.floor(new Date(row.datetime).getTime() / 1000);
     priceData.push({
       time:  ts,
