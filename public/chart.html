@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.development.js"></script>
+  <style>html, body, #chart { margin:0; padding:0; width:800px; height:600px; }</style>
+</head>
+<body>
+  <div id="chart"></div>
+  <script>
+    // sayfa dışından veri geldiğinde grafiği render eder
+    window.renderChart = (data) => {
+      const chart = LightweightCharts.createChart(document.getElementById('chart'), {
+        width: 800,
+        height: 600,
+        layout: { backgroundColor: '#ffffff', textColor: '#000000' },
+        grid: { vertLines: { color: '#eee' }, horzLines: { color: '#eee' } },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        rightPriceScale: { borderColor: '#ccc' },
+        timeScale: { borderColor: '#ccc', timeVisible: true, secondsVisible: false, barSpacing: 10 },
+      });
+      const candle = chart.addCandlestickSeries({
+        upColor: '#26a69a', downColor: '#ef5350',
+        borderUpColor: '#26a69a', borderDownColor: '#ef5350',
+        wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+      });
+      candle.setData(data);
+    };
+  </script>
+</body>
+</html>

@@ -1,0 +1,352 @@
+// src/App.js
+import React, { useEffect, useRef, useState } from 'react';
+import Papa from 'papaparse';
+import { createChart, CrosshairMode } from 'lightweight-charts';
+
+// Helper functions
+const parseDate = s => new Date(s);
+const sleep     = ms => new Promise(r => setTimeout(r, ms));
+const getWeekKey = dateStr => {
+  const d = new Date(dateStr);
+  const diff = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - diff);
+  return d.toISOString().slice(0,10);
+};
+const isCompleteWeek = rows => {
+  const dates = new Set(rows.map(r => r.date));
+  const monday = new Date(getWeekKey(rows[0].time));
+  for (let i = 0; i < 5; i++) {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    if (!dates.has(d.toISOString().slice(0,10))) return false;
+  }
+  return true;
+};
+// Build 09:00–17:00 in 30‑minute slots
+const TIME_SLOTS = (() => {
+  const slots = [];
+  for (let h = 9; h <= 17; h++) {
+    slots.push({ hour: h, minute: 0 });
+    if (h !== 17) slots.push({ hour: h, minute: 30 });
+  }
+  return slots;
+})();
+// Daily aggregation
+const aggregateDailyData = raw => {
+  const grouped = {};
+  raw.forEach(r => {
+    const day = r.date;
+    (grouped[day] ||= []).push(r);
+  });
+  return Object.entries(grouped)
+    .map(([day, rows]) => {
+      rows.sort((a,b)=> parseDate(a.time) - parseDate(b.time));
+      return {
+        time:   day,
+        open:   +rows[0].open,
+        high:   Math.max(...rows.map(r=>+r.high)),
+        low:    Math.min(...rows.map(r=>+r.low)),
+        close:  +rows[rows.length-1].close,
+        volume: rows.reduce((s,r)=> s + (+r.volume), 0),
+      };
+    })
+    .sort((a,b)=> parseDate(a.time) - parseDate(b.time));
+};
+
+const App = () => {
+  const chartRef     = useRef();
+  const chart        = useRef();
+  const candleSeries = useRef();
+  const volumeSeries = useRef();
+  const [tag , setTag] = useState("");
+  const [dataSet, setDataSet] = useState({ detailed: [], aggregated: [] });
+  const [error,   setError]   = useState('');
+  const stock = 'AAPL';
+
+  // Global error handler
+  useEffect(() => {
+    const onError = e => {
+      setError(e.message || 'Bilinmeyen hata');
+      console.error(e);
+    };
+    window.addEventListener('error', onError);
+    return () => window.removeEventListener('error', onError);
+  }, []);
+
+  // Chart setup + CSV load
+  useEffect(() => {
+    if (!chartRef.current) return;
+
+    chart.current = createChart(chartRef.current, {
+      width:  chartRef.current.clientWidth,
+      height: 600,
+      layout: {
+        backgroundColor: '#ffffff',
+        textColor:       '#000000',
+      },
+      grid: {
+        vertLines: { color: '#eee' },
+        horzLines: { color: '#eee' },
+      },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+      },
+      rightPriceScale: {
+        borderColor: '#ccc',
+      },
+      timeScale: {
+        borderColor:      '#ccc',
+        timeVisible:      true,
+        secondsVisible:   false,
+        barSpacing:       10,
+        tickMarkFormatter: (time, tickType, locale) => {
+          let date;
+          if (typeof time === 'object') {
+            date = new Date(Date.UTC(time.year, time.month - 1, time.day));
+          } else {
+            date = new Date(time * 1000);
+          }
+          return date.toLocaleString(locale, {
+            month:  '2-digit',
+            day:    '2-digit',
+            hour:   '2-digit',
+            minute: '2-digit',
+          });
+        },
+      },
+    });
+
+    
+
+    candleSeries.current = chart.current.addCandlestickSeries({
+      upColor:         '#26a69a',
+      downColor:       '#ef5350',
+      borderUpColor:   '#26a69a',
+      borderDownColor: '#ef5350',
+      wickUpColor:     '#26a69a',
+      wickDownColor:   '#ef5350',
+    });
+
+    volumeSeries.current = chart.current.addHistogramSeries({
+      priceFormat: { type: 'volume' },
+      priceScaleId: '',
+    });
+
+    Papa.parse('/AAPL_5min_2023-09-11_to_2025-04-01.csv', {
+      download:       true,
+      header:         true,
+      skipEmptyLines: true,
+      complete: res => {
+        try {
+          const valid = res.data
+            .filter(r => r.datetime && r.open && r.high && r.low && r.close && r.volume)
+            .map(r => ({
+              time:   r.datetime,
+              date:   r.datetime.slice(0,10),
+              open:   r.open,
+              high:   r.high,
+              low:    r.low,
+              close:  r.close,
+              volume: r.volume,
+              
+            }));
+          const agg = aggregateDailyData(valid);
+          setDataSet({ detailed: valid, aggregated: agg });
+          updateChart('5-day', { detailed: valid, aggregated: agg });
+        } catch (err) {
+          setError(err.message);
+        }
+      },
+      error: err => {
+        console.error(err);
+        setError('CSV yüklenirken sorun oldu');
+      },
+    });
+
+    const onResize = () => {
+      chart.current?.resize(chartRef.current.clientWidth, 600);
+    };
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      chart.current?.remove();
+    };
+  }, []);
+  // Haftalık özet satırlarını hesaplar
+
+
+
+  // Generic chart update
+  const updateChart = (mode, ds) => {
+    try {
+      const data = mode === 'detailed' ? ds.detailed : ds.aggregated;
+      if (!data.length) {
+        setError('Veri yok!');
+        return;
+      }
+      setError('');
+      candleSeries.current.setData(data);
+      volumeSeries.current.setData(
+        data.map(d => ({
+          time:  d.time,
+          value: +d.volume,
+          color: +d.close >= +d.open
+            ? 'rgba(38,166,154,0.5)'
+            : 'rgba(239,83,80,0.5)',
+        }))
+      );
+      chart.current.timeScale().fitContent();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // Weekly processing + POST to server
+  const processWeekly = async () => {
+    try {
+      const { detailed } = dataSet;
+      if (!detailed.length) return;
+  
+      // Hafta gruplarını oluştur
+      const groups = {};
+      detailed.forEach(r => {
+        const d = new Date(r.time);
+        if (d.getDay() === 0 || d.getDay() === 6) return;
+        (groups[getWeekKey(r.time)] ||= []).push(r);
+      });
+  
+      const summaryCsv = [];
+  
+      for (const week of Object.keys(groups).sort((a, b) => new Date(a) - new Date(b))) {
+        const rows = groups[week];
+        if (!isCompleteWeek(rows)) continue;
+  
+        // 09:00–17:00 slot’larına uyan satırları al
+        const weeklyRows = [];
+        rows.forEach(r => {
+          const d = new Date(r.time);
+          TIME_SLOTS.forEach(slot => {
+            if (d.getHours() === slot.hour && d.getMinutes() === slot.minute) {
+              weeklyRows.push(r);
+            }
+          });
+        });
+        if (!weeklyRows.length) continue;
+  
+        // Grafik verisini hazırla ve çiz
+        const chartData = weeklyRows.map(r => ({
+          time:   Math.floor(new Date(r.time).getTime() / 1000),
+          open:   +r.open,
+          high:   +r.high,
+          low:    +r.low,
+          close:  +r.close,
+          volume: +r.volume,
+        }));
+        candleSeries.current.setData(chartData);
+        volumeSeries.current.setData(
+          chartData.map(d => ({
+            time:  d.time,
+            value: d.volume,
+            color: d.close >= d.open
+              ? 'rgba(38,166,154,0.5)'
+              : 'rgba(239,83,80,0.5)',
+          }))
+        );
+        chart.current.timeScale().fitContent();
+        await sleep(500);
+  
+        // Ekran görüntüsünü al ve kaydet
+        const imgData = chartRef.current
+          .querySelector('canvas')
+          .toDataURL('image/png');
+        const monday = week;
+        const dFri   = new Date(week);
+        dFri.setDate(dFri.getDate() + 4);
+        const friday = dFri.toISOString().slice(0,10);
+        const shotName = `${stock}_${monday}_${friday}.png`;
+  
+        await fetch('http://localhost:4000/api/saveScreenshot', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tag: stock, imageData: imgData, filename: shotName }),
+        });
+  
+        // İleriki tarihler: 1 hafta ve 4 hafta sonrası Cuma
+        const nextFriD = new Date(week);
+        nextFriD.setDate(nextFriD.getDate() + 11);
+        const nextFriday = nextFriD.toISOString().slice(0,10);
+        const monthLaterD = new Date(week);
+        monthLaterD.setDate(monthLaterD.getDate() + 4 + 28);
+        const monthLaterFriday = monthLaterD.toISOString().slice(0,10);
+  
+        // Belirli bir tarihte, saatteki bar’ı bul
+        const findBar = (dateStr, hour, minute) =>
+          detailed.find(r => {
+            const d = new Date(r.time);
+            return r.date === dateStr && d.getHours() === hour && d.getMinutes() === minute;
+          }) || {};
+  
+        const mondayBar      = findBar(monday, 9, 0);
+        const fridayBar      = findBar(friday, 17, 0);
+        const nextFriBar     = findBar(nextFriday, 17, 0);
+        const monthLaterBar  = findBar(monthLaterFriday, 17, 0);
+  
+        // Özet satırını ekle
+        summaryCsv.push({
+          mondayDate:             monday,
+          openMonday:             mondayBar.open ?? '',
+          fridayDate:             friday,
+          closeFriday:            fridayBar.close ?? '',
+          nextFridayDate:         nextFriday,
+          closeNextFriday:        nextFriBar.close ?? '',
+          monthLaterFridayDate:   monthLaterFriday,
+          closeMonthLaterFriday:  monthLaterBar.close ?? '',
+          screenshot:             shotName,
+        });
+      }
+  
+      // CSV’i oluşturup sunucuya gönder
+      const csvStr = Papa.unparse(summaryCsv);
+      await fetch('http://localhost:4000/api/saveCsv', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          csvData:  csvStr,
+          filename: `${stock}_weekly_summary.csv`,
+        }),
+      });
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+  
+
+  const handleMode = mode => {
+    if (mode === '5-day') processWeekly();
+    else updateChart(mode, dataSet);
+  };
+
+  return (
+    <div style={{ margin:20, fontFamily:'Arial, sans-serif', position:'relative' }}>
+      {error && (
+        <div style={{
+          position:'absolute', top:10, left:10,
+          padding:'8px 12px', backgroundColor:'rgba(255,0,0,0.8)',
+          color:'#fff', borderRadius:4, zIndex:1000
+        }}>
+          {error}
+        </div>
+      )}
+      <h2>{stock} Haftalık Hisse Senedi Grafiği</h2>
+      <div style={{ marginBottom:10 }}>
+        <button onClick={()=>handleMode('annual')}  style={{marginRight:8}}>Yıllık</button>
+        <button onClick={()=>handleMode('monthly')} style={{marginRight:8}}>Aylık</button>
+        <button onClick={()=>handleMode('5-day')}   style={{marginRight:8}}>Haftalık (09–17:00, 30dk)</button>
+        <button onClick={()=>handleMode('detailed')}>Detaylı</button>
+      </div>
+      <div ref={chartRef} style={{ width:'100%', height:600 }} />
+    </div>
+  );
+};
+
+export default App;
